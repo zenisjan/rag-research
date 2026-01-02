@@ -1,0 +1,10 @@
+# Feel free to add your Python dependencies below. For formatting guidelines, see:
+# https://pip.pypa.io/en/latest/reference/requirements-file-format/
+
+apify>=2.0.1
+langchain==1.2.0
+langchain-core>=1.2.1,<2.0.0
+langchain-openai>=0.2.0
+langchain-pinecone==0.2.13
+pinecone>=6.0.0,<8.0.0
+openai>=1.40.0,<2.0.0
