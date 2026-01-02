@@ -370,6 +370,8 @@ Instructions:
             "sources_used": len(documents),
         }
 
+        Actor.log.info(f"Answer: {answer}")
+        Actor.log.info(f"Citations: {citations}")
         Actor.log.info(f"Generated answer with {len(citations)} citations")
         return result
 
