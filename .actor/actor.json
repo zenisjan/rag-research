@@ -5,6 +5,7 @@
     "description": "RAG Actor that queries meeting notes from Pinecone vector store and generates answers using GPT-4o.",
     "version": "1.0.0",
     "buildTag": "latest",
+    "usesStandbyMode": true,
     "meta": {
         "templateId": "python-empty",
         "generatedBy": "claude-opus-4"

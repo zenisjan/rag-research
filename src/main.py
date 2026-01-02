@@ -1,13 +1,17 @@
 """
 RAG Actor for querying Pinecone vector store with meeting notes context.
+Supports Standby mode with HTTP request/response handling.
 """
 import asyncio
+import json
 import os
 import re
 import math
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from typing import List, Dict, Any, Tuple
+from urllib.parse import parse_qs, urlparse
 
 from apify import Actor
 from langchain_openai.chat_models import ChatOpenAI
@@ -25,8 +29,9 @@ EMBEDDING_MODEL = "text-embedding-3-large"
 LLM_MODEL = "gpt-4o"
 DEFAULT_K = 10
 DEFAULT_THRESHOLD = 0.6
-DEFAULT_RECENCY_WEIGHT = 0.2  # How much recency influences final score (0=none, 1=only recency)
-DEFAULT_RECENCY_DECAY_DAYS = 180  # Half-life for recency decay in days
+DEFAULT_RECENCY_WEIGHT = 0.2
+DEFAULT_RECENCY_DECAY_DAYS = 180
+HTTP_PORT = int(os.getenv('ACTOR_STANDBY_PORT', '8080'))
 
 
 @dataclass
@@ -164,10 +169,8 @@ def parse_date(date_str: str) -> datetime | None:
     if not date_str or date_str == 'N/A':
         return None
 
-    # Primary format from Pinecone: 2025-04-22T13:07:00.000Z
-    # Other common formats as fallback
     formats = [
-        '%Y-%m-%dT%H:%M:%S.%fZ',  # Primary: 2025-04-22T13:07:00.000Z
+        '%Y-%m-%dT%H:%M:%S.%fZ',
         '%Y-%m-%dT%H:%M:%SZ',
         '%Y-%m-%dT%H:%M:%S.%f',
         '%Y-%m-%dT%H:%M:%S',
@@ -190,30 +193,21 @@ def parse_date(date_str: str) -> datetime | None:
 def calculate_recency_score(page_date: str, decay_days: int) -> float:
     """
     Calculate recency score using exponential decay.
-
-    Returns a score between 0 and 1, where:
-    - 1.0 = document from today
-    - 0.5 = document from decay_days ago (half-life)
-    - Approaches 0 for very old documents
+    Returns a score between 0 and 1.
     """
     parsed_date = parse_date(page_date)
     if not parsed_date:
-        # No valid date - return neutral score
         return 0.5
 
     now = datetime.now()
-    # Make parsed_date naive if it's timezone-aware
     if parsed_date.tzinfo is not None:
         parsed_date = parsed_date.replace(tzinfo=None)
 
     age_days = (now - parsed_date).days
 
     if age_days < 0:
-        # Future date (unlikely) - treat as today
         return 1.0
 
-    # Exponential decay: score = 2^(-age/half_life)
-    # At age=0: score=1, at age=decay_days: score=0.5
     return math.pow(2, -age_days / decay_days)
 
 
@@ -222,18 +216,11 @@ def calculate_combined_score(
     recency_score: float,
     recency_weight: float
 ) -> float:
-    """
-    Combine similarity and recency scores.
-
-    recency_weight controls the balance:
-    - 0.0 = only semantic similarity matters
-    - 1.0 = only recency matters
-    - 0.2 (default) = 80% similarity + 20% recency
-    """
+    """Combine similarity and recency scores."""
     return (1 - recency_weight) * similarity_score + recency_weight * recency_score
 
 
-async def retrieve_documents(
+def retrieve_documents_sync(
     vector_store: PineconeVectorStore,
     question: str,
     k: int,
@@ -242,16 +229,11 @@ async def retrieve_documents(
     recency_decay_days: int = 180
 ) -> List[Document]:
     """
-    Retrieve relevant documents with recency-aware ranking.
-
-    Combines semantic similarity with document recency to prioritize
-    both relevant and recent customer interview content.
+    Retrieve relevant documents with recency-aware ranking (synchronous version).
     """
-    # Fetch more documents than needed to allow for re-ranking
     fetch_multiplier = 2 if recency_weight > 0 else 1
     fetch_k = min(k * fetch_multiplier, 50)
 
-    # Get documents with similarity scores
     results_with_scores: List[Tuple[Document, float]] = (
         vector_store.similarity_search_with_score(question, k=fetch_k)
     )
@@ -259,7 +241,6 @@ async def retrieve_documents(
     if not results_with_scores:
         return []
 
-    # Filter by threshold and calculate combined scores
     scored_docs: List[Tuple[Document, float, float, float]] = []
 
     for doc, similarity_score in results_with_scores:
@@ -272,14 +253,11 @@ async def retrieve_documents(
             similarity_score, recency_score, recency_weight
         )
 
-        # Store: (doc, combined_score, similarity_score, recency_score)
         scored_docs.append((doc, combined_score, similarity_score, recency_score))
 
-    # Sort by combined score (descending) and take top k
     scored_docs.sort(key=lambda x: x[1], reverse=True)
     top_docs = scored_docs[:k]
 
-    # Log scoring details for debugging
     if top_docs and recency_weight > 0:
         Actor.log.debug(f"Recency weight: {recency_weight}, decay days: {recency_decay_days}")
         for doc, combined, sim, rec in top_docs[:3]:
@@ -291,59 +269,74 @@ async def retrieve_documents(
     return [doc for doc, _, _, _ in top_docs]
 
 
-async def main() -> None:
-    """Main entry point for the Apify Actor."""
-    async with Actor:
-        try:
-            input_data = await Actor.get_input() or {}
-            config = get_config(input_data)
+async def retrieve_documents(
+    vector_store: PineconeVectorStore,
+    question: str,
+    k: int,
+    threshold: float,
+    recency_weight: float = 0.0,
+    recency_decay_days: int = 180
+) -> List[Document]:
+    """Async wrapper for retrieve_documents_sync."""
+    return await asyncio.to_thread(
+        retrieve_documents_sync,
+        vector_store, question, k, threshold, recency_weight, recency_decay_days
+    )
 
-            Actor.log.info(f"Question: {config.question[:100]}...")
-            Actor.log.info(f"Settings: k={config.k}, threshold={config.threshold}, recency_weight={config.recency_weight}")
 
-            # Initialize services
-            embeddings = OpenAIEmbeddings(
-                api_key=config.openai_api_key,
-                model=EMBEDDING_MODEL,
-            )
+def process_rag_query(input_data: dict) -> dict:
+    """
+    Process a RAG query and return the result.
+    This is the core logic extracted for reuse in both batch and HTTP modes.
+    """
+    try:
+        config = get_config(input_data)
 
-            pinecone_client = Pinecone(api_key=config.pinecone_api_key)
-            index = pinecone_client.Index(config.index_name)
+        Actor.log.info(f"Question: {config.question[:100]}...")
+        Actor.log.info(f"Settings: k={config.k}, threshold={config.threshold}, recency_weight={config.recency_weight}")
 
-            vector_store = PineconeVectorStore(
-                index=index,
-                embedding=embeddings,
-            )
+        # Initialize services
+        embeddings = OpenAIEmbeddings(
+            api_key=config.openai_api_key,
+            model=EMBEDDING_MODEL,
+        )
 
-            llm = ChatOpenAI(
-                openai_api_key=config.openai_api_key,
-                model=LLM_MODEL,
-                temperature=0.0,
-            )
+        pinecone_client = Pinecone(api_key=config.pinecone_api_key)
+        index = pinecone_client.Index(config.index_name)
 
-            # Retrieve context with recency-aware ranking
-            documents = await retrieve_documents(
-                vector_store,
-                config.question,
-                config.k,
-                config.threshold,
-                config.recency_weight,
-                config.recency_decay_days,
-            )
-            Actor.log.info(f"Retrieved {len(documents)} documents")
+        vector_store = PineconeVectorStore(
+            index=index,
+            embedding=embeddings,
+        )
 
-            if not documents:
-                await Actor.push_data({
-                    "answer": "I couldn't find any relevant information to answer your question.",
-                    "citations": [],
-                    "sources_used": 0,
-                })
-                return
+        llm = ChatOpenAI(
+            openai_api_key=config.openai_api_key,
+            model=LLM_MODEL,
+            temperature=0.0,
+        )
 
-            # Build and execute chain
-            context = format_context(documents)
+        # Retrieve context with recency-aware ranking
+        documents = retrieve_documents_sync(
+            vector_store,
+            config.question,
+            config.k,
+            config.threshold,
+            config.recency_weight,
+            config.recency_decay_days,
+        )
+        Actor.log.info(f"Retrieved {len(documents)} documents")
 
-            prompt = ChatPromptTemplate.from_template("""{start_template}
+        if not documents:
+            return {
+                "answer": "I couldn't find any relevant information to answer your question.",
+                "citations": [],
+                "sources_used": 0,
+            }
+
+        # Build and execute chain
+        context = format_context(documents)
+
+        prompt = ChatPromptTemplate.from_template("""{start_template}
 
 Context from meeting recordings:
 {context}
@@ -357,34 +350,166 @@ Instructions:
 - Only say "I don't know" if context has no relevant information
 """)
 
-            chain = (
-                {
-                    "start_template": lambda _: config.start_template,
-                    "context": lambda _: context,
-                    "question": RunnablePassthrough(),
+        chain = (
+            {
+                "start_template": lambda _: config.start_template,
+                "context": lambda _: context,
+                "question": RunnablePassthrough(),
+            }
+            | prompt
+            | llm
+            | StrOutputParser()
+        )
+
+        answer = chain.invoke(config.question)
+        citations = extract_citations(answer, documents)
+
+        result = {
+            "answer": answer,
+            "citations": citations,
+            "sources_used": len(documents),
+        }
+
+        Actor.log.info(f"Generated answer with {len(citations)} citations")
+        return result
+
+    except ValueError as e:
+        Actor.log.error(f"Validation error: {e}")
+        return {"error": str(e), "error_type": "validation"}
+    except Exception as e:
+        Actor.log.exception(f"Unexpected error: {e}")
+        return {"error": str(e), "error_type": "unexpected"}
+
+
+class RAGRequestHandler(BaseHTTPRequestHandler):
+    """HTTP request handler for RAG queries in Standby mode."""
+
+    def log_message(self, format: str, *args) -> None:
+        """Override to use Actor.log instead of stderr."""
+        Actor.log.debug(f"HTTP: {format % args}")
+
+    def send_json_response(self, data: dict, status_code: int = 200) -> None:
+        """Send a JSON response."""
+        response_body = json.dumps(data, ensure_ascii=False, indent=2).encode('utf-8')
+        self.send_response(status_code)
+        self.send_header('Content-Type', 'application/json; charset=utf-8')
+        self.send_header('Content-Length', str(len(response_body)))
+        self.end_headers()
+        self.wfile.write(response_body)
+
+    def do_GET(self) -> None:
+        """Handle GET requests."""
+        # Handle Apify standby readiness probe
+        if 'x-apify-container-server-readiness-probe' in self.headers:
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/plain')
+            self.end_headers()
+            self.wfile.write(b'Readiness probe OK')
+            return
+
+        parsed_url = urlparse(self.path)
+        path = parsed_url.path
+
+        if path == '/' or path == '/health':
+            self.send_json_response({
+                "status": "ready",
+                "message": "Interviews RAG Actor is running in Standby mode",
+                "endpoints": {
+                    "POST /query": "Submit a RAG query",
+                    "GET /health": "Health check",
                 }
-                | prompt
-                | llm
-                | StrOutputParser()
-            )
-
-            answer = chain.invoke(config.question)
-            citations = extract_citations(answer, documents)
-
-            await Actor.push_data({
-                "answer": answer,
-                "citations": citations,
-                "sources_used": len(documents),
             })
+            return
 
-            Actor.log.info(f"Generated answer with {len(citations)} citations")
-            Actor.log.info(f"Answer: {answer}")
-            Actor.log.info(f"Citations: {citations}")
+        if path == '/query':
+            # Handle query via GET with query parameters
+            query_params = parse_qs(parsed_url.query)
+            input_data = {k: v[0] if len(v) == 1 else v for k, v in query_params.items()}
+
+            if not input_data.get('question'):
+                self.send_json_response(
+                    {"error": "Missing 'question' parameter", "error_type": "validation"},
+                    status_code=400
+                )
+                return
+
+            result = process_rag_query(input_data)
+            status_code = 200 if 'error' not in result else 400
+            self.send_json_response(result, status_code)
+            return
+
+        self.send_json_response(
+            {"error": f"Not found: {path}", "error_type": "not_found"},
+            status_code=404
+        )
+
+    def do_POST(self) -> None:
+        """Handle POST requests."""
+        parsed_url = urlparse(self.path)
+        path = parsed_url.path
+
+        if path == '/query' or path == '/':
+            # Read request body
+            content_length = int(self.headers.get('Content-Length', 0))
+            if content_length == 0:
+                self.send_json_response(
+                    {"error": "Empty request body", "error_type": "validation"},
+                    status_code=400
+                )
+                return
+
+            try:
+                body = self.rfile.read(content_length)
+                input_data = json.loads(body.decode('utf-8'))
+            except json.JSONDecodeError as e:
+                self.send_json_response(
+                    {"error": f"Invalid JSON: {e}", "error_type": "validation"},
+                    status_code=400
+                )
+                return
+
+            result = process_rag_query(input_data)
+            status_code = 200 if 'error' not in result else 400
+            self.send_json_response(result, status_code)
+            return
+
+        self.send_json_response(
+            {"error": f"Not found: {path}", "error_type": "not_found"},
+            status_code=404
+        )
 
 
-        except ValueError as e:
-            Actor.log.error(f"Validation error: {e}")
-            await Actor.push_data({"error": str(e), "error_type": "validation"})
-        except Exception as e:
-            Actor.log.exception(f"Unexpected error: {e}")
-            await Actor.push_data({"error": str(e), "error_type": "unexpected"})
+def run_http_server() -> None:
+    """Run the HTTP server for Standby mode."""
+    server_address = ('', HTTP_PORT)
+    httpd = HTTPServer(server_address, RAGRequestHandler)
+    Actor.log.info(f"Starting HTTP server on port {HTTP_PORT}")
+    Actor.log.info("Standby mode enabled - waiting for requests...")
+
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        Actor.log.info("Shutting down HTTP server...")
+        httpd.shutdown()
+
+
+async def run_batch_mode() -> None:
+    """Run in traditional batch mode (process single input and exit)."""
+    input_data = await Actor.get_input() or {}
+    result = process_rag_query(input_data)
+    await Actor.push_data(result)
+
+
+async def main() -> None:
+    """Main entry point for the Apify Actor."""
+    async with Actor:
+        # Check if running in Standby mode
+        is_standby = os.getenv('ACTOR_STANDBY_PORT') is not None
+
+        if is_standby:
+            Actor.log.info("Running in Standby mode")
+            # Run HTTP server in a thread to not block the async loop
+            await asyncio.to_thread(run_http_server)
+        else:
+            Actor.log.info("Running in batch mode")
+            await run_batch_mode()
