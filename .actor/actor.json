@@ -1,0 +1,17 @@
+{
+    "actorSpecification": 1,
+    "name": "interviews-rag",
+    "title": "Interviews RAG",
+    "description": "RAG Actor that queries meeting notes from Pinecone vector store and generates answers using GPT-4o.",
+    "version": "1.0.0",
+    "buildTag": "latest",
+    "meta": {
+        "templateId": "python-empty",
+        "generatedBy": "claude-opus-4"
+    },
+    "input": "./input_schema.json",
+    "dockerfile": "../Dockerfile",
+    "storages": {
+        "dataset": "./dataset_schema.json"
+    }
+}

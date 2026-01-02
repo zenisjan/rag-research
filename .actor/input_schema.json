@@ -1,0 +1,78 @@
+{
+    "title": "Interviews RAG",
+    "type": "object",
+    "schemaVersion": 1,
+    "properties": {
+        "question": {
+            "title": "Question",
+            "type": "string",
+            "description": "Your question about the meeting notes/interviews",
+            "editor": "textarea"
+        },
+        "index_name": {
+            "title": "Pinecone Index Name",
+            "type": "string",
+            "description": "Name of the Pinecone index containing your embeddings",
+            "editor": "textfield",
+            "prefill": "interviews"
+        },
+        "pinecone_key": {
+            "title": "Pinecone API Key",
+            "type": "string",
+            "description": "Your Pinecone API key",
+            "editor": "textfield",
+            "isSecret": true
+        },
+        "openai_key": {
+            "title": "OpenAI API Key",
+            "type": "string",
+            "description": "Your OpenAI API key",
+            "editor": "textfield",
+            "isSecret": true
+        },
+        "k": {
+            "title": "Top K Results",
+            "type": "integer",
+            "description": "Number of documents to retrieve (1-50)",
+            "editor": "number",
+            "default": 10,
+            "minimum": 1,
+            "maximum": 50
+        },
+        "threshold": {
+            "title": "Similarity Threshold",
+            "type": "number",
+            "description": "Minimum similarity score for retrieved documents (0.0-1.0)",
+            "editor": "number",
+            "default": 0.6,
+            "minimum": 0,
+            "maximum": 1
+        },
+        "recency_weight": {
+            "title": "Recency Weight",
+            "type": "number",
+            "description": "How much to favor recent documents (0.0 = only similarity, 1.0 = only recency, 0.2 = balanced)",
+            "editor": "number",
+            "default": 0.2,
+            "minimum": 0,
+            "maximum": 1
+        },
+        "recency_decay_days": {
+            "title": "Recency Decay (Days)",
+            "type": "integer",
+            "description": "Half-life for recency scoring - documents this many days old get 50% recency score",
+            "editor": "number",
+            "default": 180,
+            "minimum": 1,
+            "maximum": 3650
+        },
+        "start_template": {
+            "title": "System Prompt",
+            "type": "string",
+            "description": "Instructions for how the AI should respond",
+            "editor": "textarea",
+            "default": "Answer the question based on the context provided."
+        }
+    },
+    "required": ["question", "index_name", "pinecone_key", "openai_key"]
+}

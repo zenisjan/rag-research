@@ -1,0 +1,58 @@
+{
+    "actorSpecification": 1,
+    "fields": {
+        "type": "object",
+        "properties": {
+            "answer": {
+                "type": "string",
+                "description": "The generated answer in markdown format"
+            },
+            "citations": {
+                "type": "array",
+                "description": "List of source citations used in the answer"
+            },
+            "sources_used": {
+                "type": "integer",
+                "description": "Number of source documents used"
+            },
+            "error": {
+                "type": "string",
+                "description": "Error message if the request failed"
+            },
+            "error_type": {
+                "type": "string",
+                "description": "Type of error (validation, unexpected)"
+            }
+        }
+    },
+    "views": {
+        "overview": {
+            "title": "RAG Response",
+            "transformation": {
+                "fields": ["answer", "sources_used", "citations", "error"]
+            },
+            "display": {
+                "component": "table",
+                "properties": {
+                    "answer": {
+                        "label": "Answer",
+                        "format": "text"
+                    },
+                    "sources_used": {
+                        "label": "Sources",
+                        "format": "number"
+                    },
+                    "citations": {
+                        "label": "Citations",
+                        "format": "array"
+                    },
+                    "error": {
+                        "label": "Error",
+                        "format": "text"
+                    }
+                }
+            }
+        }
+    }
+}
+
