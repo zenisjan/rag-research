@@ -33,6 +33,10 @@ DEFAULT_RECENCY_WEIGHT = 0.2
 DEFAULT_RECENCY_DECAY_DAYS = 180
 HTTP_PORT = int(os.getenv('ACTOR_STANDBY_PORT', '8080'))
 
+# Global store for Actor input (API keys, index name, etc.)
+# These are loaded once at Actor startup and merged with each request
+_actor_config: Dict[str, Any] = {}
+
 
 @dataclass
 class Config:
@@ -284,13 +288,25 @@ async def retrieve_documents(
     )
 
 
+def get_merged_input(request_data: dict) -> dict:
+    """
+    Merge Actor startup config with request-specific data.
+    Request data takes priority over cached config.
+    """
+    merged = {**_actor_config}
+    merged.update(request_data)
+    return merged
+
+
 def process_rag_query(input_data: dict) -> dict:
     """
     Process a RAG query and return the result.
     This is the core logic extracted for reuse in both batch and HTTP modes.
     """
     try:
-        config = get_config(input_data)
+        # Merge with cached Actor config (API keys, index, etc.)
+        merged_input = get_merged_input(input_data)
+        config = get_config(merged_input)
 
         Actor.log.info(f"Question: {config.question[:100]}...")
         Actor.log.info(f"Settings: k={config.k}, threshold={config.threshold}, recency_weight={config.recency_weight}")
@@ -413,11 +429,21 @@ class RAGRequestHandler(BaseHTTPRequestHandler):
         path = parsed_url.path
 
         if path == '/' or path == '/health':
+            # Build config status (without exposing secrets)
+            config_status = {}
+            if _actor_config.get('openai_key') or _actor_config.get('openai_api_key'):
+                config_status['openai_key'] = 'configured'
+            if _actor_config.get('pinecone_key') or _actor_config.get('pinecone_api_key'):
+                config_status['pinecone_key'] = 'configured'
+            if _actor_config.get('index_name'):
+                config_status['index_name'] = _actor_config.get('index_name')
+            
             self.send_json_response({
                 "status": "ready",
                 "message": "Interviews RAG Actor is running in Standby mode",
+                "config": config_status,
                 "endpoints": {
-                    "POST /query": "Submit a RAG query",
+                    "POST /query": "Submit a RAG query (only 'question' required if API keys pre-configured)",
                     "GET /health": "Health check",
                 }
             })
@@ -497,14 +523,40 @@ def run_http_server() -> None:
 
 async def run_batch_mode() -> None:
     """Run in traditional batch mode (process single input and exit)."""
-    input_data = await Actor.get_input() or {}
-    result = process_rag_query(input_data)
+    # In batch mode, _actor_config is already loaded, just process it
+    result = process_rag_query({})
     await Actor.push_data(result)
+
+
+async def load_actor_config() -> None:
+    """
+    Load Actor input configuration and cache it globally.
+    This allows API keys and settings to be provided once at Actor startup.
+    """
+    global _actor_config
+    _actor_config = await Actor.get_input() or {}
+    
+    # Log what's configured (without exposing secrets)
+    configured_keys = []
+    if _actor_config.get('openai_key') or _actor_config.get('openai_api_key'):
+        configured_keys.append('OpenAI API key')
+    if _actor_config.get('pinecone_key') or _actor_config.get('pinecone_api_key'):
+        configured_keys.append('Pinecone API key')
+    if _actor_config.get('index_name'):
+        configured_keys.append(f"Index: {_actor_config.get('index_name')}")
+    
+    if configured_keys:
+        Actor.log.info(f"Loaded config: {', '.join(configured_keys)}")
+    else:
+        Actor.log.warning("No API keys configured in Actor input - they must be provided with each request")
 
 
 async def main() -> None:
     """Main entry point for the Apify Actor."""
     async with Actor:
+        # Load and cache Actor input (API keys, index name, etc.)
+        await load_actor_config()
+        
         # Check if running in Standby mode
         is_standby = os.getenv('ACTOR_STANDBY_PORT') is not None
 
