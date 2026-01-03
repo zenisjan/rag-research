@@ -104,7 +104,13 @@ def get_config(input_data: dict) -> Config:
         default='Answer the question based on the context provided.'
     )
 
-    # Validate question (API keys and index are required in input schema)
+    # Validate required fields
+    if not openai_api_key:
+        raise ValueError("OpenAI API key is required (OPENAI_API_KEY env var or 'openai_key'/'openai_api_key' in input)")
+    if not pinecone_api_key:
+        raise ValueError("Pinecone API key is required (PINECONE_API_KEY env var or 'pinecone_key'/'pinecone_api_key' in input)")
+    if not index_name:
+        raise ValueError("Index name is required (INDEX_NAME env var or 'index_name'/'index' in input)")
     if not question:
         raise ValueError("Question is required (QUESTION or 'question')")
 
