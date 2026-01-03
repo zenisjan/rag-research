@@ -104,19 +104,9 @@ def get_config(input_data: dict) -> Config:
         default='Answer the question based on the context provided.'
     )
 
-    # Validate required fields
-    errors = []
-    if not openai_api_key:
-        errors.append("OpenAI API key is required (OPENAI_API_KEY or 'openai_key')")
-    if not pinecone_api_key:
-        errors.append("Pinecone API key is required (PINECONE_API_KEY or 'pinecone_key')")
-    if not index_name:
-        errors.append("Index name is required (INDEX_NAME or 'index_name')")
+    # Validate question (API keys and index are required in input schema)
     if not question:
-        errors.append("Question is required (QUESTION or 'question')")
-
-    if errors:
-        raise ValueError("; ".join(errors))
+        raise ValueError("Question is required (QUESTION or 'question')")
 
     return Config(
         openai_api_key=openai_api_key,
@@ -429,21 +419,16 @@ class RAGRequestHandler(BaseHTTPRequestHandler):
         path = parsed_url.path
 
         if path == '/' or path == '/health':
-            # Build config status (without exposing secrets)
-            config_status = {}
-            if _actor_config.get('openai_key') or _actor_config.get('openai_api_key'):
-                config_status['openai_key'] = 'configured'
-            if _actor_config.get('pinecone_key') or _actor_config.get('pinecone_api_key'):
-                config_status['pinecone_key'] = 'configured'
-            if _actor_config.get('index_name'):
-                config_status['index_name'] = _actor_config.get('index_name')
-            
             self.send_json_response({
                 "status": "ready",
                 "message": "Interviews RAG Actor is running in Standby mode",
-                "config": config_status,
+                "config": {
+                    "openai_key": "configured",
+                    "pinecone_key": "configured",
+                    "index_name": _actor_config.get('index_name', ''),
+                },
                 "endpoints": {
-                    "POST /query": "Submit a RAG query (only 'question' required if API keys pre-configured)",
+                    "POST /query": "Submit a RAG query (only 'question' required)",
                     "GET /health": "Health check",
                 }
             })
@@ -531,24 +516,13 @@ async def run_batch_mode() -> None:
 async def load_actor_config() -> None:
     """
     Load Actor input configuration and cache it globally.
-    This allows API keys and settings to be provided once at Actor startup.
+    API keys and index_name are required in the input schema.
     """
     global _actor_config
     _actor_config = await Actor.get_input() or {}
     
-    # Log what's configured (without exposing secrets)
-    configured_keys = []
-    if _actor_config.get('openai_key') or _actor_config.get('openai_api_key'):
-        configured_keys.append('OpenAI API key')
-    if _actor_config.get('pinecone_key') or _actor_config.get('pinecone_api_key'):
-        configured_keys.append('Pinecone API key')
-    if _actor_config.get('index_name'):
-        configured_keys.append(f"Index: {_actor_config.get('index_name')}")
-    
-    if configured_keys:
-        Actor.log.info(f"Loaded config: {', '.join(configured_keys)}")
-    else:
-        Actor.log.warning("No API keys configured in Actor input - they must be provided with each request")
+    index_name = _actor_config.get('index_name', '')
+    Actor.log.info(f"Loaded config: OpenAI API key, Pinecone API key, Index: {index_name}")
 
 
 async def main() -> None:
