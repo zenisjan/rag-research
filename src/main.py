@@ -295,7 +295,10 @@ def process_rag_query(input_data: dict) -> dict:
     """
     try:
         # Merge with cached Actor config (API keys, index, etc.)
+        Actor.log.info(f"process_rag_query input_data: {input_data}")
         merged_input = get_merged_input(input_data)
+        Actor.log.info(f"process_rag_query merged_input keys: {list(merged_input.keys())}")
+        Actor.log.info(f"process_rag_query merged_input question: {merged_input.get('question', 'NOT FOUND')}")
         config = get_config(merged_input)
 
         Actor.log.info(f"Question: {config.question[:100]}...")
@@ -473,7 +476,10 @@ class RAGRequestHandler(BaseHTTPRequestHandler):
 
             try:
                 body = self.rfile.read(content_length)
+                Actor.log.info(f"POST body raw: {body}")
                 input_data = json.loads(body.decode('utf-8'))
+                Actor.log.info(f"POST parsed input_data: {input_data}")
+                Actor.log.info(f"POST question key present: {'question' in input_data}")
             except json.JSONDecodeError as e:
                 self.send_json_response(
                     {"error": f"Invalid JSON: {e}", "error_type": "validation"},
