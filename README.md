@@ -4,6 +4,11 @@ An Apify Actor that performs Retrieval-Augmented Generation (RAG) on meeting not
 
 **This Actor runs only in Standby mode** as an HTTP server for real-time API requests.
 
+## Todo
+
+- RAG settings can be overriden with parameters in individual request (API keys, Index name, K documents, Thresholds and template)
+- Add ability to set up the parameters as Apify envars so they are not hardcoded (K documents, tresholds and Template)
+
 ## Features
 
 - **Vector Search**: Retrieves relevant documents from Pinecone using similarity search

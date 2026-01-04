@@ -538,10 +538,8 @@ def run_http_server() -> None:
 
     Actor.log.info(f"✓ HTTP server started on port {HTTP_PORT}")
     Actor.log.info(f"✓ Endpoints:")
-    Actor.log.info(f"    GET  /        - Health check / status")
     Actor.log.info(f"    GET  /health  - Health check")
     Actor.log.info(f"    POST /query   - Submit RAG query")
-    Actor.log.info(f"    POST /        - Submit RAG query (alias)")
     Actor.log.info("=" * 60)
     Actor.log.info("Waiting for requests...")
 
