@@ -30,7 +30,7 @@ load_dotenv()
 
 # Configuration constants
 EMBEDDING_MODEL = "text-embedding-3-large"
-LLM_MODEL = "gpt-5.1"
+LLM_MODEL = "gpt-4o"
 HTTP_PORT = int(os.getenv('ACTOR_STANDBY_PORT', '8080'))
 
 
