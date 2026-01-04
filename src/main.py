@@ -10,7 +10,7 @@ import math
 from dataclasses import dataclass
 from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 from urllib.parse import parse_qs, urlparse
 
 from apify import Actor
@@ -24,7 +24,7 @@ from langchain_pinecone import PineconeVectorStore
 from pinecone import Pinecone
 
 
-# Configuration
+# Configuration constants
 EMBEDDING_MODEL = "text-embedding-3-large"
 LLM_MODEL = "gpt-4o"
 DEFAULT_K = 10
@@ -36,6 +36,23 @@ HTTP_PORT = int(os.getenv('ACTOR_STANDBY_PORT', '8080'))
 # Global store for Actor input (API keys, index name, etc.)
 # These are loaded once at Actor startup and merged with each request
 _actor_config: Dict[str, Any] = {}
+_config_loaded: bool = False
+
+
+def censor_key(key: Optional[str]) -> str:
+    """Censor an API key for safe logging."""
+    if not key:
+        return "(not set)"
+    if len(key) < 8:
+        return "***"
+    return f"{key[:4]}...{key[-4:]}"
+
+
+def log_config_source(name: str, value: Optional[str], source: str) -> None:
+    """Log where a config value came from."""
+    status = "✓" if value else "✗"
+    censored = censor_key(value) if "key" in name.lower() else (value or "(not set)")
+    Actor.log.info(f"  {status} {name}: {censored} (from {source})")
 
 
 @dataclass
@@ -52,76 +69,116 @@ class Config:
     recency_decay_days: int
 
 
-def get_config(input_data: dict) -> Config:
+def get_value_with_source(
+    input_data: dict,
+    *keys: str,
+    env_var: Optional[str] = None,
+    default: Optional[str] = None
+) -> Tuple[Optional[str], str]:
     """
-    Validate inputs. Environment variables take priority over input data.
+    Get value from env or input data with fallback.
+    Returns tuple of (value, source) for logging.
     """
-    def get_value(*keys, env_var: str = None, default=None):
-        """Get value from env or input data with fallback."""
-        if env_var:
-            val = os.getenv(env_var)
-            if val and val.strip():
-                return val.strip()
-        for key in keys:
-            val = input_data.get(key)
-            if val and str(val).strip():
-                return str(val).strip()
-        return default
+    # Check environment variable first
+    if env_var:
+        val = os.getenv(env_var)
+        if val and val.strip():
+            return val.strip(), f"env:{env_var}"
+    
+    # Check input data keys
+    for key in keys:
+        val = input_data.get(key)
+        if val and str(val).strip():
+            return str(val).strip(), f"input:{key}"
+    
+    # Return default
+    if default is not None:
+        return default, "default"
+    return None, "not_found"
 
-    openai_api_key = get_value('openai_key', 'openai_api_key', env_var='OPENAI_API_KEY')
-    pinecone_api_key = get_value('pinecone_key', 'pinecone_api_key', env_var='PINECONE_API_KEY')
-    index_name = get_value('index_name', 'index', env_var='INDEX_NAME')
-    question = get_value('question', 'query', env_var='QUESTION')
+
+def get_config(input_data: dict, require_question: bool = True) -> Config:
+    """
+    Validate inputs and create Config object.
+    Environment variables take priority over input data.
+    
+    Args:
+        input_data: Dictionary with configuration values
+        require_question: If False, allows missing question (for startup validation)
+    """
+    openai_api_key, openai_src = get_value_with_source(
+        input_data, 'openai_key', 'openai_api_key', env_var='OPENAI_API_KEY'
+    )
+    pinecone_api_key, pinecone_src = get_value_with_source(
+        input_data, 'pinecone_key', 'pinecone_api_key', env_var='PINECONE_API_KEY'
+    )
+    index_name, index_src = get_value_with_source(
+        input_data, 'index_name', 'index', env_var='INDEX_NAME'
+    )
+    question, question_src = get_value_with_source(
+        input_data, 'question', 'query', env_var='QUESTION'
+    )
 
     # Parse numeric values
-    k_raw = get_value('k', env_var='K', default=str(DEFAULT_K))
+    k_raw, _ = get_value_with_source(input_data, 'k', env_var='K', default=str(DEFAULT_K))
     try:
-        k = max(1, min(50, int(k_raw)))
+        k = max(1, min(50, int(k_raw))) if k_raw else DEFAULT_K
     except (ValueError, TypeError):
         k = DEFAULT_K
 
-    threshold_raw = get_value('threshold', env_var='THRESHOLD', default=str(DEFAULT_THRESHOLD))
+    threshold_raw, _ = get_value_with_source(
+        input_data, 'threshold', env_var='THRESHOLD', default=str(DEFAULT_THRESHOLD)
+    )
     try:
-        threshold = max(0.0, min(1.0, float(threshold_raw)))
+        threshold = max(0.0, min(1.0, float(threshold_raw))) if threshold_raw else DEFAULT_THRESHOLD
     except (ValueError, TypeError):
         threshold = DEFAULT_THRESHOLD
 
-    recency_weight_raw = get_value('recency_weight', env_var='RECENCY_WEIGHT', default=str(DEFAULT_RECENCY_WEIGHT))
+    recency_weight_raw, _ = get_value_with_source(
+        input_data, 'recency_weight', env_var='RECENCY_WEIGHT', default=str(DEFAULT_RECENCY_WEIGHT)
+    )
     try:
-        recency_weight = max(0.0, min(1.0, float(recency_weight_raw)))
+        recency_weight = max(0.0, min(1.0, float(recency_weight_raw))) if recency_weight_raw else DEFAULT_RECENCY_WEIGHT
     except (ValueError, TypeError):
         recency_weight = DEFAULT_RECENCY_WEIGHT
 
-    recency_decay_raw = get_value('recency_decay_days', env_var='RECENCY_DECAY_DAYS', default=str(DEFAULT_RECENCY_DECAY_DAYS))
+    recency_decay_raw, _ = get_value_with_source(
+        input_data, 'recency_decay_days', env_var='RECENCY_DECAY_DAYS', default=str(DEFAULT_RECENCY_DECAY_DAYS)
+    )
     try:
-        recency_decay_days = max(1, int(recency_decay_raw))
+        recency_decay_days = max(1, int(recency_decay_raw)) if recency_decay_raw else DEFAULT_RECENCY_DECAY_DAYS
     except (ValueError, TypeError):
         recency_decay_days = DEFAULT_RECENCY_DECAY_DAYS
 
-    start_template = get_value(
+    start_template, _ = get_value_with_source(
+        input_data,
         'start_template',
         env_var='START_TEMPLATE',
         default='Answer the question based on the context provided.'
     )
 
     # Validate required fields
+    missing = []
     if not openai_api_key:
-        raise ValueError("OpenAI API key is required (OPENAI_API_KEY env var or 'openai_key'/'openai_api_key' in input)")
+        missing.append("OpenAI API key (env: OPENAI_API_KEY or input: openai_key)")
     if not pinecone_api_key:
-        raise ValueError("Pinecone API key is required (PINECONE_API_KEY env var or 'pinecone_key'/'pinecone_api_key' in input)")
+        missing.append("Pinecone API key (env: PINECONE_API_KEY or input: pinecone_key)")
     if not index_name:
-        raise ValueError("Index name is required (INDEX_NAME env var or 'index_name'/'index' in input)")
-    if not question:
-        raise ValueError("Question is required (QUESTION or 'question')")
+        missing.append("Index name (env: INDEX_NAME or input: index_name)")
+    if require_question and not question:
+        missing.append("Question (input: question)")
+    
+    if missing:
+        raise ValueError(f"Missing required configuration: {', '.join(missing)}")
 
     return Config(
         openai_api_key=openai_api_key,
         pinecone_api_key=pinecone_api_key,
         index_name=index_name,
-        question=question,
+        question=question or "",  # Empty if not required
         k=k,
         threshold=threshold,
-        start_template=start_template,
+        start_template=start_template or 'Answer the question based on the context provided.',
         recency_weight=recency_weight,
         recency_decay_days=recency_decay_days,
     )
@@ -300,14 +357,23 @@ def process_rag_query(input_data: dict) -> dict:
     This is the core logic extracted for reuse in both batch and HTTP modes.
     """
     try:
+        Actor.log.info("-" * 40)
+        Actor.log.info("Processing RAG query...")
+        
+        # Log request data
+        request_keys = list(input_data.keys()) if input_data else []
+        Actor.log.debug(f"Request data keys: {request_keys}")
+        
         # Merge with cached Actor config (API keys, index, etc.)
-        Actor.log.info(f"process_rag_query input_data: {input_data}")
         merged_input = get_merged_input(input_data)
-        Actor.log.info(f"process_rag_query merged_input keys: {list(merged_input.keys())}")
-        Actor.log.info(f"process_rag_query merged_input question: {merged_input.get('question', 'NOT FOUND')}")
-        config = get_config(merged_input)
-
-        Actor.log.info(f"Question: {config.question[:100]}...")
+        
+        Actor.log.debug(f"Merged config keys: {list(merged_input.keys())}")
+        
+        # Get config - this properly checks env vars AND input data
+        # Don't check question manually here, let get_config handle it
+        config = get_config(merged_input, require_question=True)
+        
+        Actor.log.info(f"Question: {config.question[:100]}{'...' if len(config.question) > 100 else ''}")
         Actor.log.info(f"Settings: k={config.k}, threshold={config.threshold}, recency_weight={config.recency_weight}")
 
         # Initialize services
@@ -428,13 +494,19 @@ class RAGRequestHandler(BaseHTTPRequestHandler):
         path = parsed_url.path
 
         if path == '/' or path == '/health':
+            # Get config status
+            openai_key = _actor_config.get('openai_key') or _actor_config.get('openai_api_key') or os.getenv('OPENAI_API_KEY')
+            pinecone_key = _actor_config.get('pinecone_key') or _actor_config.get('pinecone_api_key') or os.getenv('PINECONE_API_KEY')
+            index_name = _actor_config.get('index_name') or _actor_config.get('index') or os.getenv('INDEX_NAME')
+            
             self.send_json_response({
-                "status": "ready",
+                "status": "ready" if _config_loaded else "initializing",
                 "message": "Interviews RAG Actor is running in Standby mode",
+                "config_loaded": _config_loaded,
                 "config": {
-                    "openai_key": "configured",
-                    "pinecone_key": "configured",
-                    "index_name": _actor_config.get('index_name', ''),
+                    "openai_key": "configured" if openai_key else "MISSING",
+                    "pinecone_key": "configured" if pinecone_key else "MISSING",
+                    "index_name": index_name or "MISSING",
                 },
                 "endpoints": {
                     "POST /query": "Submit a RAG query (only 'question' required)",
@@ -508,8 +580,15 @@ def run_http_server() -> None:
     """Run the HTTP server for Standby mode."""
     server_address = ('', HTTP_PORT)
     httpd = HTTPServer(server_address, RAGRequestHandler)
-    Actor.log.info(f"Starting HTTP server on port {HTTP_PORT}")
-    Actor.log.info("Standby mode enabled - waiting for requests...")
+    
+    Actor.log.info(f"✓ HTTP server started on port {HTTP_PORT}")
+    Actor.log.info(f"✓ Endpoints available:")
+    Actor.log.info(f"    GET  /        - Health check / status")
+    Actor.log.info(f"    GET  /health  - Health check")
+    Actor.log.info(f"    POST /query   - Submit RAG query")
+    Actor.log.info(f"    POST /        - Submit RAG query (alias)")
+    Actor.log.info("=" * 60)
+    Actor.log.info("Waiting for requests...")
 
     try:
         httpd.serve_forever()
@@ -525,31 +604,111 @@ async def run_batch_mode() -> None:
     await Actor.push_data(result)
 
 
-async def load_actor_config() -> None:
+async def load_actor_config() -> Dict[str, Any]:
     """
     Load Actor input configuration and cache it globally.
-    API keys and index_name are required in the input schema.
+    Returns the loaded configuration dict.
     """
-    global _actor_config
-    _actor_config = await Actor.get_input() or {}
+    global _actor_config, _config_loaded
     
-    index_name = _actor_config.get('index_name', '')
-    Actor.log.info(f"Loaded config: OpenAI API key, Pinecone API key, Index: {index_name}")
+    Actor.log.info("=" * 60)
+    Actor.log.info("Loading Actor configuration...")
+    Actor.log.info("=" * 60)
+    
+    # Load from Actor input (key-value store)
+    actor_input = await Actor.get_input()
+    
+    if actor_input:
+        Actor.log.info(f"Actor.get_input() returned {len(actor_input)} keys: {list(actor_input.keys())}")
+        _actor_config = dict(actor_input)
+    else:
+        Actor.log.warning("Actor.get_input() returned None or empty - will rely on environment variables")
+        _actor_config = {}
+    
+    # Log configuration sources
+    Actor.log.info("-" * 40)
+    Actor.log.info("Configuration resolution:")
+    
+    # Check each key source
+    openai_key, openai_src = get_value_with_source(_actor_config, 'openai_key', 'openai_api_key', env_var='OPENAI_API_KEY')
+    pinecone_key, pinecone_src = get_value_with_source(_actor_config, 'pinecone_key', 'pinecone_api_key', env_var='PINECONE_API_KEY')
+    index_name, index_src = get_value_with_source(_actor_config, 'index_name', 'index', env_var='INDEX_NAME')
+    
+    log_config_source("openai_key", openai_key, openai_src)
+    log_config_source("pinecone_key", pinecone_key, pinecone_src)
+    log_config_source("index_name", index_name, index_src)
+    
+    # Log optional config
+    k_val, _ = get_value_with_source(_actor_config, 'k', env_var='K', default=str(DEFAULT_K))
+    threshold_val, _ = get_value_with_source(_actor_config, 'threshold', env_var='THRESHOLD', default=str(DEFAULT_THRESHOLD))
+    recency_weight_val, _ = get_value_with_source(_actor_config, 'recency_weight', env_var='RECENCY_WEIGHT', default=str(DEFAULT_RECENCY_WEIGHT))
+    
+    Actor.log.info(f"  ✓ k: {k_val}, threshold: {threshold_val}, recency_weight: {recency_weight_val}")
+    Actor.log.info("-" * 40)
+    
+    _config_loaded = True
+    return _actor_config
+
+
+def validate_startup_config() -> None:
+    """
+    Validate that required configuration is present at startup.
+    Raises ValueError if critical config is missing.
+    """
+    Actor.log.info("Validating startup configuration...")
+    
+    try:
+        # Validate without requiring question (that comes from requests)
+        config = get_config(_actor_config, require_question=False)
+        Actor.log.info(f"✓ Configuration valid - ready to serve requests")
+        Actor.log.info(f"  Index: {config.index_name}")
+        Actor.log.info(f"  Question: {config.question}")
+        Actor.log.info(f"  OpenAI key: {censor_key(config.openai_api_key)}")
+        Actor.log.info(f"  Pinecone key: {censor_key(config.pinecone_api_key)}")
+        return config
+    except ValueError as e:
+        Actor.log.error(f"✗ Configuration validation failed: {e}")
+        raise
 
 
 async def main() -> None:
     """Main entry point for the Apify Actor."""
     async with Actor:
+        Actor.log.info("=" * 60)
+        Actor.log.info("Interviews RAG Actor starting...")
+        Actor.log.info("=" * 60)
+        
+        # Log environment info
+        is_standby = os.getenv('ACTOR_STANDBY_PORT') is not None
+        Actor.log.info(f"Mode: {'STANDBY' if is_standby else 'BATCH'}")
+        Actor.log.info(f"ACTOR_STANDBY_PORT: {os.getenv('ACTOR_STANDBY_PORT', '(not set)')}")
+        Actor.log.info(f"HTTP Port: {HTTP_PORT}")
+        
+        # Log relevant env vars (censored)
+        Actor.log.info("Environment variables check:")
+        Actor.log.info(f"  OPENAI_API_KEY: {censor_key(os.getenv('OPENAI_API_KEY'))}")
+        Actor.log.info(f"  PINECONE_API_KEY: {censor_key(os.getenv('PINECONE_API_KEY'))}")
+        Actor.log.info(f"  INDEX_NAME: {os.getenv('INDEX_NAME', '(not set)')}")
+        
         # Load and cache Actor input (API keys, index name, etc.)
         await load_actor_config()
         
-        # Check if running in Standby mode
-        is_standby = os.getenv('ACTOR_STANDBY_PORT') is not None
+        # Validate configuration at startup (fail fast if missing required config)
+        try:
+            validate_startup_config()
+        except ValueError as e:
+            Actor.log.error(f"Failed to start: {e}")
+            Actor.log.error("Please configure API keys and index_name in Actor input or environment variables")
+            return
 
         if is_standby:
-            Actor.log.info("Running in Standby mode")
+            Actor.log.info("=" * 60)
+            Actor.log.info("Starting HTTP server for Standby mode...")
+            Actor.log.info("=" * 60)
             # Run HTTP server in a thread to not block the async loop
             await asyncio.to_thread(run_http_server)
         else:
-            Actor.log.info("Running in batch mode")
+            Actor.log.info("=" * 60)
+            Actor.log.info("Running in batch mode...")
+            Actor.log.info("=" * 60)
             await run_batch_mode()
