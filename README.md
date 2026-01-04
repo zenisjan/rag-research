@@ -2,6 +2,8 @@
 
 An Apify Actor that performs Retrieval-Augmented Generation (RAG) on meeting notes stored in Pinecone vector store. It retrieves relevant context and generates answers using GPT-4o.
 
+**This Actor runs only in Standby mode** as an HTTP server for real-time API requests.
+
 ## Features
 
 - **Vector Search**: Retrieves relevant documents from Pinecone using similarity search
@@ -11,24 +13,41 @@ An Apify Actor that performs Retrieval-Augmented Generation (RAG) on meeting not
 - **Standby Mode**: Runs as an HTTP server for real-time API requests
 - **Configurable**: Adjustable retrieval parameters (k, threshold, recency)
 
-## Standby Mode (HTTP API)
+## Configuration
 
-When running in Standby mode, the Actor operates as an HTTP server. Configure API keys once at Actor startup, then send questions via HTTP requests.
+All configuration is loaded from **environment variables**:
 
-### Actor Input (Startup Configuration)
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `OPENAI_API_KEY` | ✅ | OpenAI API key for embeddings and LLM |
+| `PINECONE_API_KEY` | ✅ | Pinecone API key |
+| `INDEX_NAME` | ✅ | Pinecone index name containing embeddings |
+| `K` | ❌ | Number of documents to retrieve (default: 20) |
+| `THRESHOLD` | ❌ | Similarity threshold 0.0-1.0 (default: 0.3) |
+| `RECENCY_WEIGHT` | ❌ | Balance between similarity and recency 0.0-1.0 (default: 0.2) |
+| `RECENCY_DECAY_DAYS` | ❌ | Half-life for recency scoring in days (default: 180) |
+| `START_TEMPLATE` | ❌ | Custom system prompt |
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `pinecone_key` | string | ✅ | Pinecone API key |
-| `openai_key` | string | ✅ | OpenAI API key |
-| `index_name` | string | ✅ | Pinecone index name containing embeddings |
-| `k` | integer | ❌ | Number of documents to retrieve (default: 10) |
-| `threshold` | number | ❌ | Similarity threshold 0.0-1.0 (default: 0.6) |
-| `recency_weight` | number | ❌ | Balance between similarity and recency 0.0-1.0 (default: 0.2) |
-| `recency_decay_days` | integer | ❌ | Half-life for recency scoring in days (default: 180) |
-| `start_template` | string | ❌ | Custom system prompt |
+### Local Development
 
-### API Endpoints
+Create a `.env` file in the project root:
+
+```env
+OPENAI_API_KEY=sk-your-openai-api-key
+PINECONE_API_KEY=your-pinecone-api-key
+INDEX_NAME=interviews
+
+# Optional
+K=20
+THRESHOLD=0.3
+RECENCY_WEIGHT=0.2
+```
+
+### Apify Deployment
+
+Configure environment variables in **Actor Settings → Environment Variables** on Apify Console.
+
+## API Endpoints
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -53,7 +72,7 @@ Content-Type: application/json
 }
 ```
 
-**Optional parameters** (override startup config):
+**Optional per-request overrides:**
 
 ```json
 {
@@ -93,36 +112,15 @@ curl -X POST https://your-actor.apify.actor/query \
 
 ```json
 {
-    "error": "Question is required",
+    "error": "Missing 'question' field in request body",
     "error_type": "validation"
 }
 ```
 
-## Batch Mode
-
-For one-off queries, provide all parameters in the Actor input including `question`.
-
-### Input
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `question` | string | ✅ | Your question about the meeting notes |
-| `index_name` | string | ✅ | Pinecone index name containing embeddings |
-| `pinecone_key` | string | ✅ | Pinecone API key |
-| `openai_key` | string | ✅ | OpenAI API key |
-| `k` | integer | ❌ | Number of documents to retrieve (default: 10) |
-| `threshold` | number | ❌ | Similarity threshold 0.0-1.0 (default: 0.6) |
-| `recency_weight` | number | ❌ | Balance between similarity and recency (default: 0.2) |
-| `recency_decay_days` | integer | ❌ | Half-life for recency scoring (default: 180) |
-| `start_template` | string | ❌ | Custom system prompt |
-
-You can also set credentials via environment variables: `OPENAI_API_KEY`, `PINECONE_API_KEY`, `INDEX_NAME`.
-
 ## Local Development
 
 ```bash
-# Run locally (batch mode)
-apify run
+# Create .env file with your credentials first
 
 # Run locally in Standby mode
 ACTOR_STANDBY_PORT=8080 apify run
@@ -134,9 +132,11 @@ apify push
 
 ## How It Works
 
-1. Validates input parameters and loads configuration
-2. Connects to Pinecone and retrieves relevant documents
-3. Applies recency-aware ranking to prioritize fresh content
-4. Formats context with source metadata
-5. Generates answer using GPT-4o with citation instructions
-6. Extracts and returns citations with the response
+1. Loads configuration from environment variables at startup
+2. Starts HTTP server listening for requests
+3. For each query:
+   - Connects to Pinecone and retrieves relevant documents
+   - Applies recency-aware ranking to prioritize fresh content
+   - Formats context with source metadata
+   - Generates answer using GPT-4o with citation instructions
+   - Extracts and returns citations with the response

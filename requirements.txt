@@ -2,6 +2,7 @@
 # https://pip.pypa.io/en/latest/reference/requirements-file-format/
 
 apify>=2.0.1
+python-dotenv>=1.0.0
 langchain==1.2.0
 langchain-core>=1.2.1,<2.0.0
 langchain-openai>=0.2.0
