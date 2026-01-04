@@ -2,13 +2,23 @@
     "actorSpecification": 1,
     "name": "interviews-rag",
     "title": "Interviews RAG",
-    "description": "RAG Actor that queries meeting notes from Pinecone vector store and generates answers using GPT-4o.",
+    "description": "RAG Actor that queries meeting notes from Pinecone vector store and generates answers using GPT-4o. Configure credentials as environment variables for Standby mode.",
     "version": "1.0.0",
     "buildTag": "latest",
     "usesStandbyMode": true,
     "meta": {
         "templateId": "python-empty",
-        "generatedBy": "claude-opus-4"
+        "generatedBy": "claude-opus-4",
+        "environmentVariables": {
+            "OPENAI_API_KEY": "Required. Your OpenAI API key for embeddings and LLM.",
+            "PINECONE_API_KEY": "Required. Your Pinecone API key.",
+            "INDEX_NAME": "Required. Name of the Pinecone index containing embeddings.",
+            "K": "Optional. Number of documents to retrieve (default: 10).",
+            "THRESHOLD": "Optional. Similarity threshold 0.0-1.0 (default: 0.6).",
+            "RECENCY_WEIGHT": "Optional. Recency weight 0.0-1.0 (default: 0.2).",
+            "RECENCY_DECAY_DAYS": "Optional. Recency decay half-life in days (default: 180).",
+            "START_TEMPLATE": "Optional. System prompt for the LLM."
+        }
     },
     "input": "./input_schema.json",
     "dockerfile": "../Dockerfile",

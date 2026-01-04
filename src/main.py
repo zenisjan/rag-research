@@ -33,10 +33,16 @@ DEFAULT_RECENCY_WEIGHT = 0.2
 DEFAULT_RECENCY_DECAY_DAYS = 180
 HTTP_PORT = int(os.getenv('ACTOR_STANDBY_PORT', '8080'))
 
-# Global store for Actor input (API keys, index name, etc.)
-# These are loaded once at Actor startup and merged with each request
-_actor_config: Dict[str, Any] = {}
+# Global store for resolved credentials (from env vars or Actor input)
+# These are loaded once at Actor startup and used for all requests
+_credentials: Dict[str, Any] = {}
 _config_loaded: bool = False
+
+
+def is_running_on_apify() -> bool:
+    """Check if we're running on Apify platform (not local development)."""
+    # APIFY_IS_AT_HOME is set to "1" when running on Apify platform
+    return os.getenv('APIFY_IS_AT_HOME') == '1'
 
 
 def censor_key(key: Optional[str]) -> str:
@@ -78,18 +84,57 @@ def get_value_with_source(
     """
     Get value from env or input data with fallback.
     Returns tuple of (value, source) for logging.
-    """
-    # Check environment variable first
-    if env_var:
-        val = os.getenv(env_var)
-        if val and val.strip():
-            return val.strip(), f"env:{env_var}"
     
-    # Check input data keys
-    for key in keys:
-        val = input_data.get(key)
-        if val and str(val).strip():
-            return str(val).strip(), f"input:{key}"
+    Priority on Apify platform:
+        1. Environment variables (configured in Actor settings)
+        2. Cached credentials (from startup)
+        3. Request input data
+        4. Default
+    
+    Priority for local development:
+        1. Actor input (INPUT.json)
+        2. Environment variables
+        3. Request input data
+        4. Default
+    """
+    on_apify = is_running_on_apify()
+    
+    if on_apify:
+        # On Apify: env vars first (configured in Actor settings)
+        if env_var:
+            val = os.getenv(env_var)
+            if val and val.strip():
+                return val.strip(), f"env:{env_var}"
+        
+        # Then cached credentials (loaded at startup)
+        for key in keys:
+            val = _credentials.get(key)
+            if val and str(val).strip():
+                return str(val).strip(), f"cached:{key}"
+        
+        # Then request input data
+        for key in keys:
+            val = input_data.get(key)
+            if val and str(val).strip():
+                return str(val).strip(), f"input:{key}"
+    else:
+        # Local development: Actor input first
+        for key in keys:
+            val = input_data.get(key)
+            if val and str(val).strip():
+                return str(val).strip(), f"input:{key}"
+        
+        # Then check cached credentials
+        for key in keys:
+            val = _credentials.get(key)
+            if val and str(val).strip():
+                return str(val).strip(), f"cached:{key}"
+        
+        # Then env vars
+        if env_var:
+            val = os.getenv(env_var)
+            if val and val.strip():
+                return val.strip(), f"env:{env_var}"
     
     # Return default
     if default is not None:
@@ -343,10 +388,10 @@ async def retrieve_documents(
 
 def get_merged_input(request_data: dict) -> dict:
     """
-    Merge Actor startup config with request-specific data.
-    Request data takes priority over cached config.
+    Merge cached credentials with request-specific data.
+    Request data is merged but credentials come from cached or env vars.
     """
-    merged = {**_actor_config}
+    merged = {**_credentials}
     merged.update(request_data)
     return merged
 
@@ -494,15 +539,16 @@ class RAGRequestHandler(BaseHTTPRequestHandler):
         path = parsed_url.path
 
         if path == '/' or path == '/health':
-            # Get config status
-            openai_key = _actor_config.get('openai_key') or _actor_config.get('openai_api_key') or os.getenv('OPENAI_API_KEY')
-            pinecone_key = _actor_config.get('pinecone_key') or _actor_config.get('pinecone_api_key') or os.getenv('PINECONE_API_KEY')
-            index_name = _actor_config.get('index_name') or _actor_config.get('index') or os.getenv('INDEX_NAME')
+            # Get config status from resolved credentials
+            openai_key, _ = get_value_with_source({}, 'openai_key', 'openai_api_key', env_var='OPENAI_API_KEY')
+            pinecone_key, _ = get_value_with_source({}, 'pinecone_key', 'pinecone_api_key', env_var='PINECONE_API_KEY')
+            index_name, _ = get_value_with_source({}, 'index_name', 'index', env_var='INDEX_NAME')
             
             self.send_json_response({
                 "status": "ready" if _config_loaded else "initializing",
                 "message": "Interviews RAG Actor is running in Standby mode",
                 "config_loaded": _config_loaded,
+                "running_on_apify": is_running_on_apify(),
                 "config": {
                     "openai_key": "configured" if openai_key else "MISSING",
                     "pinecone_key": "configured" if pinecone_key else "MISSING",
@@ -606,48 +652,93 @@ async def run_batch_mode() -> None:
 
 async def load_actor_config() -> Dict[str, Any]:
     """
-    Load Actor input configuration and cache it globally.
+    Load and cache credentials from environment variables and Actor input.
+    
+    On Apify platform:
+        - Credentials should be configured as Actor environment variables
+        - Actor.get_input() is used for optional overrides and other settings
+    
+    Local development:
+        - Credentials come from INPUT.json (Actor input)
+        - Environment variables as fallback
+    
     Returns the loaded configuration dict.
     """
-    global _actor_config, _config_loaded
+    global _credentials, _config_loaded
+    
+    on_apify = is_running_on_apify()
     
     Actor.log.info("=" * 60)
     Actor.log.info("Loading Actor configuration...")
+    Actor.log.info(f"Running on: {'APIFY PLATFORM' if on_apify else 'LOCAL DEVELOPMENT'}")
     Actor.log.info("=" * 60)
     
     # Load from Actor input (key-value store)
-    actor_input = await Actor.get_input()
+    actor_input = await Actor.get_input() or {}
     
     if actor_input:
         Actor.log.info(f"Actor.get_input() returned {len(actor_input)} keys: {list(actor_input.keys())}")
-        _actor_config = dict(actor_input)
     else:
-        Actor.log.warning("Actor.get_input() returned None or empty - will rely on environment variables")
-        _actor_config = {}
+        Actor.log.info("Actor.get_input() returned empty (expected in Standby mode)")
+    
+    # Build credentials dict - this is what we cache for all requests
+    _credentials = {}
+    
+    if on_apify:
+        # On Apify: Load from environment variables (primary source)
+        Actor.log.info("Loading credentials from environment variables...")
+        
+        if os.getenv('OPENAI_API_KEY'):
+            _credentials['openai_key'] = os.getenv('OPENAI_API_KEY')
+        if os.getenv('PINECONE_API_KEY'):
+            _credentials['pinecone_key'] = os.getenv('PINECONE_API_KEY')
+        if os.getenv('INDEX_NAME'):
+            _credentials['index_name'] = os.getenv('INDEX_NAME')
+        
+        # Also load optional settings from env vars
+        if os.getenv('K'):
+            _credentials['k'] = os.getenv('K')
+        if os.getenv('THRESHOLD'):
+            _credentials['threshold'] = os.getenv('THRESHOLD')
+        if os.getenv('RECENCY_WEIGHT'):
+            _credentials['recency_weight'] = os.getenv('RECENCY_WEIGHT')
+        if os.getenv('RECENCY_DECAY_DAYS'):
+            _credentials['recency_decay_days'] = os.getenv('RECENCY_DECAY_DAYS')
+        if os.getenv('START_TEMPLATE'):
+            _credentials['start_template'] = os.getenv('START_TEMPLATE')
+        
+        # Merge any Actor input (lower priority, for overrides)
+        for key, value in actor_input.items():
+            if key not in _credentials and value:
+                _credentials[key] = value
+    else:
+        # Local development: Load from Actor input (INPUT.json)
+        Actor.log.info("Loading credentials from Actor input (INPUT.json)...")
+        _credentials = dict(actor_input)
     
     # Log configuration sources
     Actor.log.info("-" * 40)
     Actor.log.info("Configuration resolution:")
     
-    # Check each key source
-    openai_key, openai_src = get_value_with_source(_actor_config, 'openai_key', 'openai_api_key', env_var='OPENAI_API_KEY')
-    pinecone_key, pinecone_src = get_value_with_source(_actor_config, 'pinecone_key', 'pinecone_api_key', env_var='PINECONE_API_KEY')
-    index_name, index_src = get_value_with_source(_actor_config, 'index_name', 'index', env_var='INDEX_NAME')
+    # Check each key source (pass empty dict since we want to see where values come from)
+    openai_key, openai_src = get_value_with_source({}, 'openai_key', 'openai_api_key', env_var='OPENAI_API_KEY')
+    pinecone_key, pinecone_src = get_value_with_source({}, 'pinecone_key', 'pinecone_api_key', env_var='PINECONE_API_KEY')
+    index_name, index_src = get_value_with_source({}, 'index_name', 'index', env_var='INDEX_NAME')
     
     log_config_source("openai_key", openai_key, openai_src)
     log_config_source("pinecone_key", pinecone_key, pinecone_src)
     log_config_source("index_name", index_name, index_src)
     
     # Log optional config
-    k_val, _ = get_value_with_source(_actor_config, 'k', env_var='K', default=str(DEFAULT_K))
-    threshold_val, _ = get_value_with_source(_actor_config, 'threshold', env_var='THRESHOLD', default=str(DEFAULT_THRESHOLD))
-    recency_weight_val, _ = get_value_with_source(_actor_config, 'recency_weight', env_var='RECENCY_WEIGHT', default=str(DEFAULT_RECENCY_WEIGHT))
+    k_val, _ = get_value_with_source({}, 'k', env_var='K', default=str(DEFAULT_K))
+    threshold_val, _ = get_value_with_source({}, 'threshold', env_var='THRESHOLD', default=str(DEFAULT_THRESHOLD))
+    recency_weight_val, _ = get_value_with_source({}, 'recency_weight', env_var='RECENCY_WEIGHT', default=str(DEFAULT_RECENCY_WEIGHT))
     
     Actor.log.info(f"  ✓ k: {k_val}, threshold: {threshold_val}, recency_weight: {recency_weight_val}")
     Actor.log.info("-" * 40)
     
     _config_loaded = True
-    return _actor_config
+    return _credentials
 
 
 def validate_startup_config() -> None:
@@ -659,10 +750,9 @@ def validate_startup_config() -> None:
     
     try:
         # Validate without requiring question (that comes from requests)
-        config = get_config(_actor_config, require_question=False)
+        config = get_config(_credentials, require_question=False)
         Actor.log.info(f"✓ Configuration valid - ready to serve requests")
         Actor.log.info(f"  Index: {config.index_name}")
-        Actor.log.info(f"  Question: {config.question}")
         Actor.log.info(f"  OpenAI key: {censor_key(config.openai_api_key)}")
         Actor.log.info(f"  Pinecone key: {censor_key(config.pinecone_api_key)}")
         return config
@@ -698,7 +788,10 @@ async def main() -> None:
             validate_startup_config()
         except ValueError as e:
             Actor.log.error(f"Failed to start: {e}")
-            Actor.log.error("Please configure API keys and index_name in Actor input or environment variables")
+            if is_running_on_apify():
+                Actor.log.error("Please configure OPENAI_API_KEY, PINECONE_API_KEY, and INDEX_NAME as Actor environment variables")
+            else:
+                Actor.log.error("Please configure openai_key, pinecone_key, and index_name in INPUT.json")
             return
 
         if is_standby:

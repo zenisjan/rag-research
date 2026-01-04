@@ -1,39 +1,40 @@
 {
     "title": "Interviews RAG",
+    "description": "RAG Actor for querying meeting notes. For Standby mode: Configure OPENAI_API_KEY, PINECONE_API_KEY, and INDEX_NAME as Actor environment variables. For local development: Use INPUT.json. For batch mode: All fields can be provided here.",
     "type": "object",
     "schemaVersion": 1,
     "properties": {
-        "question": {
-            "title": "Question",
-            "type": "string",
-            "description": "Your question about the meeting notes/interviews",
-            "editor": "textarea"
-        },
-        "index_name": {
-            "title": "Pinecone Index Name",
-            "type": "string",
-            "description": "Name of the Pinecone index containing your embeddings",
-            "editor": "textfield",
-            "prefill": "interviews"
-        },
         "pinecone_key": {
             "title": "Pinecone API Key",
             "type": "string",
-            "description": "Your Pinecone API key",
+            "description": "Your Pinecone API key. On Apify: Use env var PINECONE_API_KEY instead. For local dev: Set here.",
             "editor": "textfield",
             "isSecret": true
         },
         "openai_key": {
             "title": "OpenAI API Key",
             "type": "string",
-            "description": "Your OpenAI API key",
+            "description": "Your OpenAI API key. On Apify: Use env var OPENAI_API_KEY instead. For local dev: Set here.",
             "editor": "textfield",
             "isSecret": true
+        },
+        "index_name": {
+            "title": "Pinecone Index Name",
+            "type": "string",
+            "description": "Name of the Pinecone index. On Apify: Use env var INDEX_NAME instead. For local dev: Set here.",
+            "editor": "textfield",
+            "prefill": "interviews"
+        },
+        "question": {
+            "title": "Question (for batch mode)",
+            "type": "string",
+            "description": "Your question about the meeting notes/interviews. In Standby mode, provide this via HTTP request instead.",
+            "editor": "textarea"
         },
         "k": {
             "title": "Top K Results",
             "type": "integer",
-            "description": "Number of documents to retrieve (1-50)",
+            "description": "Number of documents to retrieve (1-50). Env var: K",
             "editor": "number",
             "default": 10,
             "minimum": 1,
@@ -42,7 +43,7 @@
         "threshold": {
             "title": "Similarity Threshold",
             "type": "number",
-            "description": "Minimum similarity score for retrieved documents (0.0-1.0)",
+            "description": "Minimum similarity score for retrieved documents (0.0-1.0). Env var: THRESHOLD",
             "editor": "number",
             "default": 0.6,
             "minimum": 0,
@@ -51,7 +52,7 @@
         "recency_weight": {
             "title": "Recency Weight",
             "type": "number",
-            "description": "How much to favor recent documents (0.0 = only similarity, 1.0 = only recency, 0.2 = balanced)",
+            "description": "How much to favor recent documents (0.0 = only similarity, 1.0 = only recency). Env var: RECENCY_WEIGHT",
             "editor": "number",
             "default": 0.2,
             "minimum": 0,
@@ -60,7 +61,7 @@
         "recency_decay_days": {
             "title": "Recency Decay (Days)",
             "type": "integer",
-            "description": "Half-life for recency scoring - documents this many days old get 50% recency score",
+            "description": "Half-life for recency scoring - documents this many days old get 50% recency score. Env var: RECENCY_DECAY_DAYS",
             "editor": "number",
             "default": 180,
             "minimum": 1,
@@ -69,10 +70,10 @@
         "start_template": {
             "title": "System Prompt",
             "type": "string",
-            "description": "Instructions for how the AI should respond",
+            "description": "Instructions for how the AI should respond. Env var: START_TEMPLATE",
             "editor": "textarea",
             "default": "Answer the question based on the context provided."
         }
     },
-    "required": ["question", "index_name", "pinecone_key", "openai_key"]
+    "required": []
 }
