@@ -1,58 +1,37 @@
 {
     "title": "Interviews RAG",
-    "description": "RAG Actor for querying meeting notes. For Standby mode: Configure OPENAI_API_KEY, PINECONE_API_KEY, and INDEX_NAME as Actor environment variables. For local development: Use INPUT.json. For batch mode: All fields can be provided here.",
+    "description": "RAG Actor for querying meeting notes. Configuration is loaded from environment variables (OPENAI_API_KEY, PINECONE_API_KEY, INDEX_NAME). HTTP requests only need to provide the question.",
     "type": "object",
     "schemaVersion": 1,
     "properties": {
-        "pinecone_key": {
-            "title": "Pinecone API Key",
-            "type": "string",
-            "description": "Your Pinecone API key. On Apify: Use env var PINECONE_API_KEY instead. For local dev: Set here.",
-            "editor": "textfield",
-            "isSecret": true
-        },
-        "openai_key": {
-            "title": "OpenAI API Key",
-            "type": "string",
-            "description": "Your OpenAI API key. On Apify: Use env var OPENAI_API_KEY instead. For local dev: Set here.",
-            "editor": "textfield",
-            "isSecret": true
-        },
-        "index_name": {
-            "title": "Pinecone Index Name",
-            "type": "string",
-            "description": "Name of the Pinecone index. On Apify: Use env var INDEX_NAME instead. For local dev: Set here.",
-            "editor": "textfield",
-            "prefill": "interviews"
-        },
         "question": {
-            "title": "Question (for batch mode)",
+            "title": "Question",
             "type": "string",
-            "description": "Your question about the meeting notes/interviews. In Standby mode, provide this via HTTP request instead.",
+            "description": "Your question about the meeting notes/interviews. Provide via HTTP POST to /query endpoint.",
             "editor": "textarea"
         },
         "k": {
             "title": "Top K Results",
             "type": "integer",
-            "description": "Number of documents to retrieve (1-50). Env var: K",
+            "description": "Number of documents to retrieve (1-50). Optional per-request override.",
             "editor": "number",
-            "default": 10,
+            "default": 20,
             "minimum": 1,
             "maximum": 50
         },
         "threshold": {
             "title": "Similarity Threshold",
             "type": "number",
-            "description": "Minimum similarity score for retrieved documents (0.0-1.0). Env var: THRESHOLD",
+            "description": "Minimum similarity score for retrieved documents (0.0-1.0). Optional per-request override.",
             "editor": "number",
-            "default": 0.6,
+            "default": 0.3,
             "minimum": 0,
             "maximum": 1
         },
         "recency_weight": {
             "title": "Recency Weight",
             "type": "number",
-            "description": "How much to favor recent documents (0.0 = only similarity, 1.0 = only recency). Env var: RECENCY_WEIGHT",
+            "description": "How much to favor recent documents (0.0 = only similarity, 1.0 = only recency). Optional per-request override.",
             "editor": "number",
             "default": 0.2,
             "minimum": 0,
@@ -61,7 +40,7 @@
         "recency_decay_days": {
             "title": "Recency Decay (Days)",
             "type": "integer",
-            "description": "Half-life for recency scoring - documents this many days old get 50% recency score. Env var: RECENCY_DECAY_DAYS",
+            "description": "Half-life for recency scoring. Optional per-request override.",
             "editor": "number",
             "default": 180,
             "minimum": 1,
@@ -70,10 +49,10 @@
         "start_template": {
             "title": "System Prompt",
             "type": "string",
-            "description": "Instructions for how the AI should respond. Env var: START_TEMPLATE",
+            "description": "Instructions for how the AI should respond. Optional per-request override.",
             "editor": "textarea",
             "default": "Answer the question based on the context provided."
         }
     },
-    "required": []
+    "required": ["question"]
 }
