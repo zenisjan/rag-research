@@ -4,11 +4,6 @@ An Apify Actor that performs Retrieval-Augmented Generation (RAG) on meeting not
 
 **This Actor runs only in Standby mode** as an HTTP server for real-time API requests.
 
-## Todo
-
-- RAG settings can be overriden with parameters in individual request (API keys, Index name, K documents, Thresholds and template)
-- Add ability to set up the parameters as Apify envars so they are not hardcoded (K documents, tresholds and Template)
-
 ## Features
 
 - **Vector Search**: Retrieves relevant documents from Pinecone using similarity search
@@ -17,10 +12,11 @@ An Apify Actor that performs Retrieval-Augmented Generation (RAG) on meeting not
 - **Recency-Aware Ranking**: Balances semantic similarity with document freshness
 - **Standby Mode**: Runs as an HTTP server for real-time API requests
 - **Configurable**: Adjustable retrieval parameters (k, threshold, recency)
+- **Per-Request Overrides**: API keys, index name, LLM model, and all parameters can be overridden per request
 
 ## Configuration
 
-All configuration is loaded from **environment variables**:
+Default configuration is loaded from **environment variables**. All parameters can be overridden per-request.
 
 | Variable | Required | Description |
 |----------|----------|-------------|
@@ -77,11 +73,31 @@ Content-Type: application/json
 }
 ```
 
-**Optional per-request overrides:**
+**Per-request overrides:**
+
+All parameters below are optional. If not provided, values from environment variables are used.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `openai_api_key` | string | Override OpenAI API key |
+| `pinecone_api_key` | string | Override Pinecone API key |
+| `index_name` | string | Override Pinecone index name |
+| `llm_model` | string | LLM model (default: `gpt-4o`) |
+| `k` | integer | Number of documents to retrieve (1-50) |
+| `threshold` | number | Similarity threshold (0.0-1.0) |
+| `recency_weight` | number | Recency vs similarity balance (0.0-1.0) |
+| `recency_decay_days` | integer | Half-life for recency scoring |
+| `start_template` | string | Custom system prompt |
+
+**Example with overrides:**
 
 ```json
 {
     "question": "What feedback did we get on the new feature?",
+    "openai_api_key": "sk-your-key",
+    "pinecone_api_key": "pc-your-key",
+    "index_name": "custom-index",
+    "llm_model": "gpt-4o-mini",
     "k": 5,
     "threshold": 0.7,
     "recency_weight": 0.3,

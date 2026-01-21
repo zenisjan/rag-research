@@ -277,7 +277,7 @@ def process_rag_query(question: str, request_overrides: Optional[Dict[str, Any]]
     
     Args:
         question: The user's question
-        request_overrides: Optional per-request overrides (k, threshold, etc.)
+        request_overrides: Optional per-request overrides (k, threshold, api keys, etc.)
     """
     global _config
 
@@ -294,6 +294,12 @@ def process_rag_query(question: str, request_overrides: Optional[Dict[str, Any]]
         recency_weight = _config.recency_weight
         recency_decay_days = _config.recency_decay_days
         start_template = _config.start_template
+        
+        # API keys and model - can be overridden per-request
+        openai_api_key = _config.openai_api_key
+        pinecone_api_key = _config.pinecone_api_key
+        index_name = _config.index_name
+        llm_model = LLM_MODEL
 
         if request_overrides:
             if 'k' in request_overrides:
@@ -318,22 +324,37 @@ def process_rag_query(question: str, request_overrides: Optional[Dict[str, Any]]
                     pass
             if 'start_template' in request_overrides:
                 start_template = str(request_overrides['start_template'])
+            
+            # API keys and configuration overrides
+            if 'openai_api_key' in request_overrides and request_overrides['openai_api_key']:
+                openai_api_key = str(request_overrides['openai_api_key'])
+                Actor.log.info(f"Using per-request OpenAI API key: {censor_key(openai_api_key)}")
+            if 'pinecone_api_key' in request_overrides and request_overrides['pinecone_api_key']:
+                pinecone_api_key = str(request_overrides['pinecone_api_key'])
+                Actor.log.info(f"Using per-request Pinecone API key: {censor_key(pinecone_api_key)}")
+            if 'index_name' in request_overrides and request_overrides['index_name']:
+                index_name = str(request_overrides['index_name'])
+                Actor.log.info(f"Using per-request index: {index_name}")
+            if 'llm_model' in request_overrides and request_overrides['llm_model']:
+                llm_model = str(request_overrides['llm_model'])
+                Actor.log.info(f"Using per-request LLM model: {llm_model}")
 
         Actor.log.info(f"Question: {question[:100]}{'...' if len(question) > 100 else ''}")
         Actor.log.info(f"Settings: k={k}, threshold={threshold}, recency_weight={recency_weight}")
+        Actor.log.info(f"LLM model: {llm_model}")
 
         # Initialize services
         embeddings = OpenAIEmbeddings(
-            api_key=_config.openai_api_key,
+            api_key=openai_api_key,
             model=EMBEDDING_MODEL,
         )
 
-        pinecone_client = Pinecone(api_key=_config.pinecone_api_key)
-        index = pinecone_client.Index(_config.index_name)
+        pinecone_client = Pinecone(api_key=pinecone_api_key)
+        index = pinecone_client.Index(index_name)
 
         # Use namespace if configured
         namespace = _config.namespace if _config.namespace else None
-        Actor.log.info(f"Using Pinecone index: {_config.index_name}, namespace: {namespace or '(default)'}")
+        Actor.log.info(f"Using Pinecone index: {index_name}, namespace: {namespace or '(default)'}")
 
         vector_store = PineconeVectorStore(
             index=index,
@@ -342,8 +363,8 @@ def process_rag_query(question: str, request_overrides: Optional[Dict[str, Any]]
         )
 
         llm = ChatOpenAI(
-            openai_api_key=_config.openai_api_key,
-            model=LLM_MODEL,
+            openai_api_key=openai_api_key,
+            model=llm_model,
             temperature=0.0,
         )
 
@@ -453,6 +474,7 @@ class RAGRequestHandler(BaseHTTPRequestHandler):
                     "openai_key": "configured" if _config else "MISSING",
                     "pinecone_key": "configured" if _config else "MISSING",
                     "index_name": _config.index_name if _config else "MISSING",
+                    "llm_model": LLM_MODEL,
                     "k": _config.k if _config else None,
                     "threshold": _config.threshold if _config else None,
                     "recency_weight": _config.recency_weight if _config else None,
@@ -460,7 +482,11 @@ class RAGRequestHandler(BaseHTTPRequestHandler):
                 "endpoints": {
                     "POST /query": "Submit a RAG query with 'question' field",
                     "GET /health": "Health check",
-                }
+                },
+                "overridable_params": [
+                    "openai_api_key", "pinecone_api_key", "index_name", "llm_model",
+                    "k", "threshold", "recency_weight", "recency_decay_days", "start_template"
+                ]
             })
             return
 
