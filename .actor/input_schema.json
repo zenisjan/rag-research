@@ -34,10 +34,10 @@
             "title": "LLM Model",
             "type": "string",
             "description": "OpenAI model to use for generating answers. Optional per-request override.",
-            "editor": "textfield",
+            "editor": "select",
             "default": "gpt-4o",
-            "enum": ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-4", "gpt-3.5-turbo", "o1", "o1-mini", "o3-mini"],
-            "enumTitles": ["GPT-4o", "GPT-4o Mini", "GPT-4 Turbo", "GPT-4", "GPT-3.5 Turbo", "O1", "O1 Mini", "O3 Mini"]
+            "enum": ["gpt-5.2","gpt-5.1","gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-4", "gpt-3.5-turbo", "o1", "o1-mini", "o3-mini"],
+            "enumTitles": ["gpt-5.2","gpt-5.1","GPT-4o", "GPT-4o Mini", "GPT-4 Turbo", "GPT-4", "GPT-3.5 Turbo", "O1", "O1 Mini", "O3 Mini"]
         },
         "k": {
             "title": "Top K Results",
